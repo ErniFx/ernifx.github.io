@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Painel IoT - ESP32</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; background-color: #f0f2f5; margin: 0; padding: 20px; color: #333; }
+        h1 { color: #2c3e50; }
+        
+        .container-grid { display: flex; flex-wrap: wrap; justify-content: center; gap: 20px; max-width: 1000px; margin: 0 auto; }
+        .card { background-color: #fff; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); flex: 1; min-width: 280px; }
+        
+        /* Estilos do LED */
+        #estado-bd { font-size: 24px; font-weight: bold; display: block; margin: 15px 0; }
+        button { padding: 12px 24px; font-size: 16px; margin: 5px; cursor: pointer; border: none; border-radius: 5px; color: white; font-weight: bold; transition: opacity 0.2s; }
+        button:hover { opacity: 0.8; }
+        .btn-ligar { background-color: #28a745; }
+        .btn-desligar { background-color: #dc3545; }
+        
+        /* Estilos do Clima */
+        .visor-clima { display: flex; justify-content: space-around; margin-bottom: 15px; }
+        .dado-atual { font-size: 28px; font-weight: bold; color: #1a73e8; }
+        .dado-label { font-size: 14px; color: #666; display: block; }
+        
+        .grafico-container { width: 100%; max-width: 800px; margin: 20px auto; background-color: #fff; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+    </style>
+</head>
+<body>
+
+    <h1>Painel de Monitoramento e Controle</h1>
+
+    <div class="container-grid">
+        <div class="card">
+            <h3>Controle de Relé / LED</h3>
+            <span id="estado-bd">Carregando...</span>
+            <button class="btn-ligar" onclick="enviarComando(1)">LIGAR</button>
+            <button class="btn-desligar" onclick="enviarComando(0)">DESLIGAR</button>
+            <p id="status-comando" style="font-size: 12px; margin-top: 15px;"></p>
+        </div>
+
+        <div class="card">
+            <h3>Clima Agora</h3>
+            <div class="visor-clima">
+                <div>
+                    <span class="dado-atual" id="temp-atual">-- °C</span>
+                    <span class="dado-label">Temperatura</span>
+                </div>
+                <div>
+                    <span class="dado-atual" id="umid-atual" style="color: #00bcd4;">-- %</span>
+                    <span class="dado-label">Umidade</span>
+                </div>
+            </div>
+            <p id="hora-atualizacao" style="font-size: 12px; color: #888;">Última atualização: Aguardando...</p>
+        </div>
+    </div>
+
+    <div class="grafico-container">
+        <canvas id="graficoClima"></canvas>
+    </div>
+
+    <script>
+        // --- CONFIGURAÇÕES ---
+        const PROJETO_ID = "ledstatus-8e62e-default-rtdb";
+        
+        const URL_LED = `https://${PROJETO_ID}.firebaseio.com/dispositivo/led_estado.json`;
+        
+        // Traz apenas as últimas 15 leituras ordenadas por horário
+        const URL_CLIMA = `https://${PROJETO_ID}.firebaseio.com/historico_clima.json?orderBy="horario"&limitToLast=15`;
+
+        let graficoInstancia = null; // Guarda a referência do gráfico
+
+        // --- LÓGICA DO LED ---
+        function atualizarVisorLED(estado) {
+            const visor = document.getElementById("estado-bd");
+            if (estado === 1 || estado === "1" || estado === true) {
+                visor.innerText = "LIGADO"; visor.style.color = "#28a745";
+            } else if (estado === 0 || estado === "0" || estado === false) {
+                visor.innerText = "DESLIGADO"; visor.style.color = "#dc3545";
+            } else {
+                visor.innerText = "Desconhecido"; visor.style.color = "#888";
+            }
+        }
+
+        function buscarEstadoLED() {
+            fetch(URL_LED)
+            .then(res => res.json())
+            .then(dado => atualizarVisorLED(dado))
+            .catch(err => console.error(err));
+        }
+
+        function enviarComando(estado) {
+            const statusTexto = document.getElementById("status-comando");
+            statusTexto.innerText = "Enviando...";
+            fetch(URL_LED, { method: "PUT", body: estado })
+            .then(res => {
+                if(res.ok) {
+                    statusTexto.innerText = estado === 1 ? "Comando LIGAR aceito!" : "Comando DESLIGAR aceito!";
+                    atualizarVisorLED(estado);
+                }
+            });
+        }
+
+        // --- LÓGICA DO CLIMA E GRÁFICO ---
+        function buscarHistoricoClima() {
+            fetch(URL_CLIMA)
+            .then(response => response.json())
+            .then(dados => {
+                if (!dados) return; // Se o banco estiver vazio, não faz nada
+
+                // O Firebase retorna um Objeto. Convertido para Array (Lista) para o gráfico entender
+                const listaRegistros = Object.values(dados);
+                
+                // Extrai as listas individuais de temperatura, umidade e horário
+                const temperaturas = [];
+                const umidades = [];
+                const rotulosTempo = [];
+
+                listaRegistros.forEach(registro => {
+                    temperaturas.push(registro.temp);
+                    umidades.push(registro.umid);
+                    
+                    // Converte os milissegundos do Firebase para hora normal
+                    const dataFormatada = new Date(registro.horario);
+                    rotulosTempo.push(dataFormatada.toLocaleTimeString('pt-BR'));
+                });
+
+                // --- 1. Atualiza os visores de "Agora"  ---
+                const ultimoRegistro = listaRegistros[listaRegistros.length - 1];
+                document.getElementById("temp-atual").innerText = ultimoRegistro.temp + " °C";
+                document.getElementById("umid-atual").innerText = ultimoRegistro.umid + " %";
+                
+                const dataUltima = new Date(ultimoRegistro.horario);
+                document.getElementById("hora-atualizacao").innerText = "Última leitura: " + dataUltima.toLocaleTimeString('pt-BR');
+
+                // --- 2. Desenha ou Atualiza o Gráfico ---
+                desenharGrafico(rotulosTempo, temperaturas, umidades);
+            })
+            .catch(error => console.error("Erro ao buscar clima:", error));
+        }
+
+        function desenharGrafico(rotulos, dadosTemp, dadosUmid) {
+            const ctx = document.getElementById('graficoClima').getContext('2d');
+            
+            // Se o gráfico já existir, destrói para desenhar o novo atualizado por cima
+            if (graficoInstancia) {
+                graficoInstancia.destroy();
+            }
+
+            graficoInstancia = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: rotulos,
+                    datasets: [
+                        {
+                            label: 'Temperatura (°C)',
+                            data: dadosTemp,
+                            borderColor: '#1a73e8',
+                            backgroundColor: 'rgba(26, 115, 232, 0.1)',
+                            borderWidth: 2,
+                            tension: 0.3,
+                            fill: true,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'Umidade (%)',
+                            data: dadosUmid,
+                            borderColor: '#00bcd4',
+                            backgroundColor: 'rgba(0, 188, 212, 0.1)',
+                            borderWidth: 2,
+                            tension: 0.3,
+                            fill: true,
+                            yAxisID: 'y1'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    interaction: { mode: 'index', intersect: false },
+                    scales: {
+                        y: { type: 'linear', display: true, position: 'left', title: { display: true, text: 'Temperatura °C' } },
+                        y1: { type: 'linear', display: true, position: 'right', title: { display: true, text: 'Umidade %' }, grid: { drawOnChartArea: false } }
+                    }
+                }
+            });
+        }
+
+        // --- INICIALIZAÇÃO ---
+        window.onload = () => {
+            buscarEstadoLED();
+            buscarHistoricoClima();
+            
+            // Opcional: Atualiza o gráfico sozinho a cada 60 segundos, sem precisar dar F5 na página
+            setInterval(buscarHistoricoClima, 60000); 
+        };
+    </script>
+</body>
+</html>

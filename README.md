@@ -1,2 +1,0 @@
-# ernifx.github.io
-IoT
